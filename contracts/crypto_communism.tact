@@ -1,90 +1,67 @@
 import "@stdlib/deploy";
+import "./jetton.tact";
+import "./game.tact";
 
-message(0xf8a7ea5) JettonTransfer {
-  queryId: Int as uint64;
-  amount: Int as coins;
-  destination: Address;
-  responseDestination: Address?;
-  customPayload: Cell? = null;
-  forwardTonAmount: Int as coins;
-  forwardPayload: Slice as remaining;
-}
+contract CryptoCommunism with Deployable, Jetton, Game {
+  seqno: Int as uint64;
 
-const JettonTransferGas: Int = ton("0.05");
-
-struct JettonWalletData {
-  balance: Int as coins;
-  ownerAddress: Address;
-  jettonMasterAddress: Address;
-  jettonWalletCode: Cell;
-}
-
-fun calculateJettonWalletAddress(
-  ownerAddress: Address,
-  jettonMasterAddress: Address,
-  jettonWalletCode: Cell,
-): Address {
-
-  let initData = JettonWalletData{
-    balance: 0,
-    ownerAddress,
-    jettonMasterAddress,
-    jettonWalletCode,
-  };
-
-  return contractAddress(StateInit{
-    code: jettonWalletCode,
-    data: initData.toCell(),
-  });
-}
-
-message Withdraw {
-  amount: Int as coins;
-  queryId: Int as uint64;
-  destination: Address;
-}
-
-contract CryptoCommunism with Deployable {
   jettonWalletAddress: Address;
   admin: Address;
+  balance: Int as uint64;
 
-  init(jettonWalletCode: Cell, jettonMasterAddress: Address) {
+  winner: Int as int8 = -1;
+  round: Int as uint8 = 0;
+  MaxPlayers: Int = 5;
+  players: map<Int as uint8, Player>;
+  playersLength: Int as uint8 = 0;
+
+  override fun sendPrize(address: Address) {
+    self.sendJetton(Withdraw{ amount: self.balance, destination: address, queryId: self.seqno });
+  }
+
+  init(seqno: Int, initBalance: Int, jettonWalletCode: Cell, jettonMasterAddress: Address, playersList: Cell) {
+    self.seqno = seqno;
     self.admin = sender();
+    self.balance = initBalance;
 
     self.jettonWalletAddress = calculateJettonWalletAddress(
       myAddress(),
       jettonMasterAddress,
       jettonWalletCode,
     );
+
+    self.players = emptyMap();
+    let ps: Slice = playersList.asSlice();
+
+    while (ps.refs() > 0) {
+      self.pushPlayer(ps.loadAddress(), ps.loadCoins());
+      if (ps.refs() > 0) {
+        ps = ps.loadRef().asSlice();
+      }
+    }
+
+    self.pushPlayer(ps.loadAddress(), ps.loadCoins());
   }
 
-  fun sendJetton(msg: Withdraw) {
-    send(SendParameters{
-      to: self.jettonWalletAddress,
-      value: JettonTransferGas,
-      body: JettonTransfer{
-        queryId: msg.queryId,
-        amount: msg.amount,
-        destination: msg.destination,
-        responseDestination: sender(),
-        customPayload: null,
-        forwardTonAmount: 0,
-        //beginCell().storeUint(0xF, 4).endCell().beginParse()
-        forwardPayload: rawSlice("F"),
-      }.toCell(),
-    });
+
+  receive(msg: Moves) {
+    require(sender() == self.admin, "Forbidden");
+    require(self.winner == -1, "Game finished");
+
+    let ps: Slice = msg.head.asSlice();
+
+    while (ps.refs() > 0) {
+      self.onMove(ps);
+      if (ps.refs() > 0) {
+        ps = ps.loadRef().asSlice();
+      }
+    }
+
+    self.onMove(ps);
   }
 
   receive(msg: Withdraw) {
     require(sender() == self.admin, "Forbidden");
     self.sendJetton(msg);
-  }
-
-  get fun balance(): Int {
-    return 0;
-  }
-
-  get fun jettonWalletAddress(): Address {
-    return self.jettonWalletAddress;
   }
 }
